@@ -1,3 +1,10 @@
 NSG IP Rules
 ============
 
+Modify NSG IP based rules easily (in bulk).
+Very useful if regularly requiring to change incoming IP (RDP, SSH etc) rules for dynamic IP addresses
+
+.\nsgiprules myrule 127.0.0.1
+
+
+
