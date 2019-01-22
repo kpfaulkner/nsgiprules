@@ -3,13 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/pkg/errors"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2018-10-01/network"
-	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2018-02-01/resources"
-	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure/auth"
 	"log"
 )
@@ -21,32 +19,9 @@ func init() {
 	}
 }
 
-func listResourceGroups(  subscriptionID string, auth autorest.Authorizer ) ([]string, error) {
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
-	defer cancel()
-
-	fmt.Printf("making client")
-	grClient := resources.NewGroupsClient(subscriptionID)
-	grClient.Authorizer = auth
-	tab := make([]string, 0)
-
-	for list, err := grClient.ListComplete(context.Background(), "", nil); list.NotDone(); err = list.Next() {
-		if err != nil {
-			return nil, errors.Wrap(err, "error traverising RG list")
-		}
-		rgName := *list.Value().Name
-		tab = append(tab, rgName)
-		fmt.Printf("rg %s\n", rgName)
-	}
-
-	grClient.Get(ctx, "")
-
-	return tab, nil
-}
-
-
 func main() {
+
+	idRegex := regexp.MustCompile(`/subscriptions/.*/resourceGroups/(.*)/providers/.*`)
 
 	// details we need to modify.
 	subscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
@@ -58,40 +33,34 @@ func main() {
 		log.Fatalf("Unable to create initialiser!!! %v\n", err)
 	}
 
-	l, err := listResourceGroups(subscriptionID, a)
+	client := network.NewSecurityGroupsClient(subscriptionID)
+	client.Authorizer = a
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
+	defer cancel()
+	sgList, err := client.ListAll(ctx)
 	if err != nil {
-		log.Fatal("Unable to list resource groups %v\n", err)
+		log.Fatalf("error during list %v\n", err)
 	}
 
-	for _,rgName := range l {
-		fmt.Printf("checking rg %s\n", rgName)
-		client := network.NewSecurityGroupsClient(subscriptionID)
-		client.Authorizer = a
+	for _, sg := range sgList.Values() {
+		fmt.Printf("securitygroup name %s\n", *sg.Name)
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute*10)
-		defer cancel()
-		sList, err := client.List(ctx, rgName)
-		if err != nil {
-			log.Fatalf("error during list %v\n", err)
-		}
+		for _, sr := range *sg.SecurityRules {
+			if *sr.Name == inRuleName {
 
-		for _, s := range sList.Values() {
-			fmt.Printf("securitygroup name %s\n", *s.Name)
-
-			sg, err := client.Get(ctx, rgName, *s.Name, "")
-			if err != nil {
-				log.Fatalf("error during security group get %v\n", err)
-			}
-
-			for _, sr := range *sg.SecurityRules {
-				if *sr.Name == inRuleName {
-					fmt.Printf("got match for rule %s!\n", *s.Name)
-					fmt.Printf("current addr %s\n", *sr.SourceAddressPrefix)
-					*sr.SourceAddressPrefix = newIP
-
-					client.CreateOrUpdate(ctx, rgName, *s.Name, sg)
+				rg := ""
+				res := idRegex.FindStringSubmatch(*sr.ID)
+				if res != nil && len(res) == 2 {
+					rg = res[1]
 				}
 
+				fmt.Printf("got match for rule %s\n", *sr.Name)
+				fmt.Printf("current addr %s\n", *sr.SourceAddressPrefix)
+				*sr.SourceAddressPrefix = newIP
+				fmt.Printf("new addr %s\n", newIP)
+
+				client.CreateOrUpdate(ctx, rg, *sg.Name, sg)
 			}
 		}
 	}
